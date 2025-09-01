@@ -18,7 +18,6 @@ use std::{
   env,
   path::Path,
   process::{Command, Stdio},
-  time::Instant,
 };
 
 mod utils;
@@ -341,10 +340,10 @@ fn main() -> Result<()> {
   let timestamp = format!("{}", now.as_secs());
 
   println!("Running execution time benchmarks...");
-  let exec_time = run_exec_time(&target)?;
+  let exec_time = run_exec_time(target)?;
 
   println!("Getting binary sizes...");
-  let binary_size = get_binary_sizes(&target_dir, &target)?;
+  let binary_size = get_binary_sizes(&target_dir, target)?;
 
   println!("Analyzing cargo dependencies...");
   let cargo_deps = cargo_deps();
@@ -363,8 +362,8 @@ fn main() -> Result<()> {
 
   if cfg!(target_os = "linux") {
     println!("Running Linux-specific benchmarks...");
-    run_strace_benchmarks(&mut new_data, &target)?;
-    new_data.max_memory = run_max_mem_benchmark(&target)?;
+    run_strace_benchmarks(&mut new_data, target)?;
+    new_data.max_memory = run_max_mem_benchmark(target)?;
   }
 
   println!("===== <BENCHMARK RESULTS>");
