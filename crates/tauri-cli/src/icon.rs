@@ -2,7 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-License-Identifier: MIT
 
-use crate::{helpers::app_paths::tauri_dir, Result};
+use crate::{
+  error::{Context, Error, ErrorExt},
+  helpers::app_paths::tauri_dir,
+  Result,
+};
 
 use std::{
   collections::HashMap,
@@ -13,7 +17,6 @@ use std::{
   sync::Arc,
 };
 
-use anyhow::Context;
 use clap::Parser;
 use icns::{IconFamily, IconType};
 use image::{
@@ -162,12 +165,15 @@ fn read_source(path: PathBuf) -> Result<Source> {
     } else {
       Ok(Source::DynamicImage(DynamicImage::ImageRgba8(
         open(&path)
-          .context(format!("Can't read and decode source image: {:?}", path))?
+          .context(format!(
+            "failed to read and decode source image {}",
+            path.display()
+          ))?
           .into_rgba8(),
       )))
     }
   } else {
-    anyhow::bail!("Error loading image");
+    crate::error::bail!("Error loading image");
   }
 }
 
@@ -181,7 +187,12 @@ fn parse_bg_color(bg_color_string: &String) -> Result<Rgba<u8>> {
         (color.alpha * 255.) as u8,
       ])
     })
-    .map_err(|_| anyhow::anyhow!("failed to parse color {}", bg_color_string))?;
+    .map_err(|_e| {
+      Error::Context(
+        format!("failed to parse color {bg_color_string}"),
+        "invalid RGBA color".into(),
+      )
+    })?;
 
   Ok(bg_color)
 }
@@ -194,7 +205,7 @@ pub fn command(options: Options) -> Result<()> {
   });
   let png_icon_sizes = options.png.unwrap_or_default();
 
-  create_dir_all(&out_dir).context("Can't create output directory")?;
+  create_dir_all(&out_dir).fs_context("Can't create output directory", &out_dir)?;
 
   let manifest = if input.extension().is_some_and(|ext| ext == "json") {
     parse_manifest(&input).map(Some)?
@@ -220,7 +231,7 @@ pub fn command(options: Options) -> Result<()> {
   let source = read_source(default_icon)?;
 
   if source.height() != source.width() {
-    anyhow::bail!("Source image must be square");
+    crate::error::bail!("Source image must be square");
   }
 
   if png_icon_sizes.is_empty() {
@@ -256,9 +267,12 @@ pub fn command(options: Options) -> Result<()> {
 fn parse_manifest(manifest_path: &Path) -> Result<Manifest> {
   let manifest: Manifest = serde_json::from_str(
     &std::fs::read_to_string(manifest_path)
-      .with_context(|| format!("cannot read manifest file {}", manifest_path.display()))?,
+      .fs_context("cannot read manifest file", manifest_path)?,
   )
-  .with_context(|| format!("failed to parse manifest file {}", manifest_path.display()))?;
+  .context(format!(
+    "failed to parse manifest file {}",
+    manifest_path.display()
+  ))?;
   log::debug!("Read manifest file from {}", manifest_path.display());
   Ok(manifest)
 }
@@ -285,27 +299,34 @@ fn icns(source: &Source, out_dir: &Path) -> Result<()> {
 
   let mut family = IconFamily::new();
 
-  for (name, entry) in entries {
+  for (_name, entry) in entries {
     let size = entry.size;
     let mut buf = Vec::new();
 
     let image = source.resize_exact(size)?;
 
-    write_png(image.as_bytes(), &mut buf, size)?;
+    write_png(image.as_bytes(), &mut buf, size).context("failed to write output file")?;
 
-    let image = icns::Image::read_png(&buf[..])?;
+    let image = icns::Image::read_png(&buf[..]).context("failed to read output file")?;
 
     family
       .add_icon_with_type(
         &image,
         IconType::from_ostype(entry.ostype.parse().unwrap()).unwrap(),
       )
-      .with_context(|| format!("Can't add {name} to Icns Family"))?;
+      .context("failed to add icon to Icns Family")?;
   }
 
-  let mut out_file = BufWriter::new(File::create(out_dir.join("icon.icns"))?);
-  family.write(&mut out_file)?;
-  out_file.flush()?;
+  let icns_path = out_dir.join("icon.icns");
+  let mut out_file = BufWriter::new(
+    File::create(&icns_path).fs_context("failed to create output file", &icns_path)?,
+  );
+  family
+    .write(&mut out_file)
+    .fs_context("failed to write output file", &icns_path)?;
+  out_file
+    .flush()
+    .fs_context("failed to flush output file", &icns_path)?;
 
   Ok(())
 }
@@ -323,28 +344,30 @@ fn ico(source: &Source, out_dir: &Path) -> Result<()> {
     if size == 256 {
       let mut buf = Vec::new();
 
-      write_png(image.as_bytes(), &mut buf, size)?;
+      write_png(image.as_bytes(), &mut buf, size).context("failed to write output file")?;
 
-      frames.push(IcoFrame::with_encoded(
-        buf,
-        size,
-        size,
-        ExtendedColorType::Rgba8,
-      )?)
+      frames.push(
+        IcoFrame::with_encoded(buf, size, size, ExtendedColorType::Rgba8)
+          .context("failed to create ico frame")?,
+      );
     } else {
-      frames.push(IcoFrame::as_png(
-        image.as_bytes(),
-        size,
-        size,
-        ExtendedColorType::Rgba8,
-      )?);
+      frames.push(
+        IcoFrame::as_png(image.as_bytes(), size, size, ExtendedColorType::Rgba8)
+          .context("failed to create PNG frame")?,
+      );
     }
   }
 
-  let mut out_file = BufWriter::new(File::create(out_dir.join("icon.ico"))?);
+  let ico_path = out_dir.join("icon.ico");
+  let mut out_file =
+    BufWriter::new(File::create(&ico_path).fs_context("failed to create output file", &ico_path)?);
   let encoder = IcoEncoder::new(&mut out_file);
-  encoder.encode_images(&frames)?;
-  out_file.flush()?;
+  encoder
+    .encode_images(&frames)
+    .context("failed to encode images")?;
+  out_file
+    .flush()
+    .fs_context("failed to flush output file", &ico_path)?;
 
   Ok(())
 }
@@ -399,7 +422,10 @@ fn android(
       let folder_name = format!("mipmap-{}", target.name);
       let out_folder = out_dir.join(&folder_name);
 
-      create_dir_all(&out_folder).context("Can't create Android mipmap output directory")?;
+      create_dir_all(&out_folder).fs_context(
+        "failed to create Android mipmap output directory",
+        &out_folder,
+      )?;
 
       fg_entries.push(PngEntry {
         name: format!("{}/{}", folder_name, "ic_launcher_foreground.png"),
@@ -445,18 +471,29 @@ fn android(
   }
   fn create_color_file(out_dir: &Path, color: &String) -> Result<()> {
     let values_folder = out_dir.join("values");
-    create_dir_all(&values_folder).context("Can't create Android values output directory")?;
-    let mut color_file = File::create(values_folder.join("ic_launcher_background.xml"))?;
-    color_file.write_all(
-      format!(
-        r#"<?xml version="1.0" encoding="utf-8"?>
-<resources>
-  <color name="ic_launcher_background">{}</color>
-</resources>"#,
-        color
-      )
-      .as_bytes(),
+    create_dir_all(&values_folder).fs_context(
+      "Can't create Android values output directory",
+      &values_folder,
     )?;
+    let launcher_background_xml_path = values_folder.join("ic_launcher_background.xml");
+    let mut color_file = File::create(&launcher_background_xml_path).fs_context(
+      "failed to create Android color file",
+      &launcher_background_xml_path,
+    )?;
+    color_file
+      .write_all(
+        format!(
+          r#"<?xml version="1.0" encoding="utf-8"?>
+<resources>
+  <color name="ic_launcher_background">{color}</color>
+</resources>"#,
+        )
+        .as_bytes(),
+      )
+      .fs_context(
+        "failed to write Android color file",
+        &launcher_background_xml_path,
+      )?;
     Ok(())
   }
 
@@ -468,7 +505,7 @@ fn android(
     android_out
   } else {
     let out = out_dir.join("android");
-    create_dir_all(&out).context("Can't create Android output directory")?;
+    create_dir_all(&out).fs_context("Can't create Android output directory", &out)?;
     out
   };
   let entries = android_entries(&out)?;
@@ -545,9 +582,14 @@ fn android(
 
     let image = apply_round_mask(&image, entry.size, margin, radius);
 
-    let mut out_file = BufWriter::new(File::create(entry.out_path)?);
-    write_png(image.as_bytes(), &mut out_file, entry.size)?;
-    out_file.flush()?;
+    let mut out_file = BufWriter::new(
+      File::create(&entry.out_path).fs_context("failed to create output file", &entry.out_path)?,
+    );
+    write_png(image.as_bytes(), &mut out_file, entry.size)
+      .context("failed to write output file")?;
+    out_file
+      .flush()
+      .fs_context("failed to flush output file", &entry.out_path)?;
   }
 
   let mut launcher_content = r#"<?xml version="1.0" encoding="utf-8"?>
@@ -570,10 +612,17 @@ fn android(
   launcher_content.push_str("\n</adaptive-icon>");
 
   let any_dpi_folder = out.join("mipmap-anydpi-v26");
-  create_dir_all(&any_dpi_folder)
-    .context("Can't create Android mipmap-anydpi-v26 output directory")?;
-  let mut launcher_file = File::create(any_dpi_folder.join("ic_launcher.xml"))?;
-  launcher_file.write_all(launcher_content.as_bytes())?;
+  create_dir_all(&any_dpi_folder).fs_context(
+    "Can't create Android mipmap-anydpi-v26 output directory",
+    &any_dpi_folder,
+  )?;
+
+  let launcher_xml_path = any_dpi_folder.join("ic_launcher.xml");
+  let mut launcher_file = File::create(&launcher_xml_path)
+    .fs_context("failed to create Android launcher file", &launcher_xml_path)?;
+  launcher_file
+    .write_all(launcher_content.as_bytes())
+    .fs_context("failed to write Android launcher file", &launcher_xml_path)?;
 
   Ok(())
 }
@@ -685,7 +734,7 @@ fn png(source: &Source, out_dir: &Path, ios_color: Rgba<u8>) -> Result<()> {
     ios_out
   } else {
     let out = out_dir.join("ios");
-    create_dir_all(&out).context("Can't create iOS output directory")?;
+    create_dir_all(&out).fs_context("failed to create iOS output directory", &out)?;
     out
   };
 
@@ -758,13 +807,16 @@ fn resize_and_save_png(
   scale_percent: Option<f32>,
 ) -> Result<()> {
   let image = resize_png(source, size, bg, scale_percent)?;
-  let mut out_file = BufWriter::new(File::create(file_path)?);
-  write_png(image.as_bytes(), &mut out_file, size)?;
-  Ok(out_file.flush()?)
+  let mut out_file =
+    BufWriter::new(File::create(file_path).fs_context("failed to create output file", file_path)?);
+  write_png(image.as_bytes(), &mut out_file, size).context("failed to write output file")?;
+  out_file
+    .flush()
+    .fs_context("failed to save output file", file_path)
 }
 
 // Encode image data as png with compression.
-fn write_png<W: Write>(image_data: &[u8], w: W, size: u32) -> Result<()> {
+fn write_png<W: Write>(image_data: &[u8], w: W, size: u32) -> image::ImageResult<()> {
   let encoder = PngEncoder::new_with_quality(w, CompressionType::Best, PngFilterType::Adaptive);
   encoder.write_image(image_data, size, size, ExtendedColorType::Rgba8)?;
   Ok(())
