@@ -206,6 +206,7 @@ fn run_command(options: Options, noise_level: NoiseLevel) -> Result<()> {
     config.app(),
     config.project_dir(),
     MobileTarget::Android,
+    false,
   )?;
   run_dev(
     interface,
