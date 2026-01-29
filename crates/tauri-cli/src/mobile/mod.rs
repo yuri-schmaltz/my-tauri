@@ -67,14 +67,9 @@ impl DevChild {
 
 impl DevProcess for DevChild {
   fn kill(&self) -> std::io::Result<()> {
-    self.manually_killed_process.store(true, Ordering::Relaxed);
-    match self.child.kill() {
-      Ok(_) => Ok(()),
-      Err(e) => {
-        self.manually_killed_process.store(false, Ordering::Relaxed);
-        Err(e)
-      }
-    }
+    self.child.kill()?;
+    self.manually_killed_process.store(true, Ordering::SeqCst);
+    Ok(())
   }
 
   fn try_wait(&self) -> std::io::Result<Option<ExitStatus>> {
@@ -86,7 +81,7 @@ impl DevProcess for DevChild {
   }
 
   fn manually_killed_process(&self) -> bool {
-    self.manually_killed_process.load(Ordering::Relaxed)
+    self.manually_killed_process.load(Ordering::SeqCst)
   }
 }
 
