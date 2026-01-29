@@ -72,10 +72,6 @@ impl DevProcess for DevChild {
     Ok(())
   }
 
-  fn try_wait(&self) -> std::io::Result<Option<ExitStatus>> {
-    self.child.try_wait().map(|res| res.map(|o| o.status))
-  }
-
   fn wait(&self) -> std::io::Result<ExitStatus> {
     self.child.wait().map(|o| o.status)
   }
