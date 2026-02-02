@@ -1,5 +1,11 @@
 # Changelog
 
+## \[2.10.1]
+
+### Bug Fixes
+
+- Re-release of `2.10.0` with working assets.
+
 ## \[2.10.0]
 
 ### Dependencies
